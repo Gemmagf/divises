@@ -1,5 +1,6 @@
-numpy
-pandas
 streamlit
+pandas
+numpy
 statsmodels
 requests
+scikit-learn
