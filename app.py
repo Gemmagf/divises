@@ -3,10 +3,13 @@ import pandas as pd
 import numpy as np
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from datetime import datetime, timedelta
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error
 import requests
 
 # Constants
-API_KEY = "F4CB01BEKYJ5SHZF"  # Substitueix per la teva clau API real
+API_KEY = "F4CB01BEKYJ5SHZF"
 BASE_URL = "https://www.alphavantage.co/query"
 
 # Funció per generar dades fictícies
@@ -29,7 +32,6 @@ def fetch_historical_data(from_currency, to_currency):
         'outputsize': 'full'
     }
     response = requests.get(BASE_URL, params=params)
-
     if response.status_code == 200:
         data = response.json()
         if "Time Series FX (Daily)" in data:
@@ -39,24 +41,71 @@ def fetch_historical_data(from_currency, to_currency):
             df.sort_index(inplace=True)
             df.rename(columns={"4. close": "Close"}, inplace=True)
             return df[["Close"]]
-        else:
-            st.error(f"Resposta inesperada de l'API: {data}")
-    else:
-        st.error(f"Error en la petició: {response.status_code} - {response.text}")
-
     start_date = (datetime.now() - timedelta(days=730)).strftime('%Y-%m-%d')
     end_date = datetime.now().strftime('%Y-%m-%d')
     return generate_fake_data(start_date, end_date, start_rate=1.10)
 
-# Inicialització de l'estat
+
+def prepare_features(data, look_back=30):
+    """Prepara les dades per a entrenar Random Forest amb una finestra mòbil."""
+    features, targets = [], []
+    for i in range(len(data) - look_back):
+        features.append(data[i:i + look_back])
+        targets.append(data[i + look_back])
+    return np.array(features), np.array(targets)
+
+# Funció per ajustar Random Forest amb una finestra mòbil
+def fit_random_forest(data, look_back=30):
+    data_values = data['Close'].values
+    X, y = prepare_features(data_values, look_back)
+    
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    
+    # Ajustem Random Forest
+    model = RandomForestRegressor(n_estimators=100, random_state=42)
+    model.fit(X_train, y_train)
+    y_pred = model.predict(X_test)
+    
+    mse = mean_squared_error(y_test, y_pred)
+    st.write(f"Mean Squared Error: {mse:.4f}")
+    return model, look_back
+
+# Funció per fer prediccions amb Random Forest
+def predict_random_forest(model, steps, data, look_back):
+    last_data = data['Close'].values[-look_back:]
+    predictions = []
+    
+    for _ in range(steps):
+        input_features = last_data.reshape(1, -1)
+        next_pred = model.predict(input_features)[0]
+        predictions.append(next_pred)
+        last_data = np.append(last_data[1:], next_pred)  # Shift i afegeix la predicció
+        
+    return predictions
+    
+    
+    
+# Inicialitza l'estat si no està definit
 if "rules" not in st.session_state:
     st.session_state.rules = []
 
-if "update_data" not in st.session_state:
-    st.session_state.update_data = False
-
 if "active_mode" not in st.session_state:
-    st.session_state.active_mode = None  # Per recordar l'opció seleccionada
+    st.session_state.active_mode = "Eina"
+
+# Sidebar
+st.sidebar.header("Mode de l'Aplicació")
+if st.sidebar.button("Eina"):
+    st.session_state.active_mode = "Eina"
+if st.sidebar.button("Validador"):
+    st.session_state.active_mode = "Validador"
+
+from_currency = st.sidebar.selectbox("Moneda base", ["EUR", "USD", "GBP", "JPY"])
+to_currency = st.sidebar.selectbox("Moneda destí", ["USD", "EUR", "GBP", "JPY"])
+volume = st.sidebar.number_input("Volum necessari", min_value=1.0, step=1.0)
+
+if st.sidebar.button("Actualitzar dades"):
+    fetch_historical_data.clear()
+    st.success("Memòria cau esborrada. Dades actualitzades.")
 
 # Funció per generar targetes de regles
 def generate_rule_cards():
@@ -92,6 +141,53 @@ def generate_rule_cards():
             else:
                 rule["trend_condition"] = "Cap"
 
+def simulate_purchases(data, rules, initial_balance=10000):
+    """
+    Simulate purchases based on rules and calculate remaining balance.
+    
+    Parameters:
+        data (pd.DataFrame): The financial data (e.g., last 30 days of prices).
+        rules (list): List of rules dictating when and how to purchase.
+        initial_balance (float): Starting balance for simulation.
+    
+    Returns:
+        pd.DataFrame: Details of purchases.
+        float: Remaining balance.
+    """
+    purchases = []
+    balance = initial_balance
+    
+    for index, row in data.iterrows():
+        for rule in rules:
+            # Check the rule conditions
+            if rule['type'] == 'Simple' and row['Close'] <= rule['target_rate']:
+                amount_to_purchase = (balance * rule['coverage_percentage'] / 100)
+                balance -= amount_to_purchase
+                purchases.append({
+                    'Date': index,
+                    'Price': row['Close'],
+                    'Amount': amount_to_purchase
+                })
+            elif rule['type'] == 'Condicionada' and row['Close'] <= rule['target_rate']:
+                if rule['trend_condition'] == 'Tendència alcista' and row['Close'] > row['Close'].mean():
+                    amount_to_purchase = (balance * rule['coverage_percentage'] / 100)
+                    balance -= amount_to_purchase
+                    purchases.append({
+                        'Date': index,
+                        'Price': row['Close'],
+                        'Amount': amount_to_purchase
+                    })
+                elif rule['trend_condition'] == 'Tendència baixista' and row['Close'] < row['Close'].mean():
+                    amount_to_purchase = (balance * rule['coverage_percentage'] / 100)
+                    balance -= amount_to_purchase
+                    purchases.append({
+                        'Date': index,
+                        'Price': row['Close'],
+                        'Amount': amount_to_purchase
+                    })
+    
+    return pd.DataFrame(purchases), balance
+
 # Funció per configurar el nombre de regles
 def configure_rules():
     st.subheader("Selecciona el nombre de regles")
@@ -108,74 +204,41 @@ def configure_rules():
             st.experimental_rerun()
     return len(st.session_state.rules)
 
-
-# Model SARIMA
-def fit_sarima_model(data):
-    model = SARIMAX(data, order=(0, 1, 0), seasonal_order=(0, 0, 0, 12), enforce_stationarity=False, enforce_invertibility=False)
-    return model.fit(disp=False)
-
-def predict_sarima(fitted_model, steps=30):
-    forecast = fitted_model.get_forecast(steps=steps)
-    return forecast.predicted_mean
-
-# Aplicació principal
-st.title("Eina de Decisió Financera Forex")
-
-# Sidebar
-st.sidebar.header("Mode de l'Aplicació")
-col1, col2 = st.sidebar.columns(2)
-
-if col1.button('Eina'):
-    st.session_state.active_mode = "eina"
-
-if col2.button('Validador'):
-    st.session_state.active_mode = "validador"
-from_currency = st.sidebar.selectbox("Moneda base", ["EUR", "USD", "GBP", "JPY"])
-to_currency = st.sidebar.selectbox("Moneda destí", ["USD", "EUR", "GBP", "JPY"])
-volume = st.sidebar.number_input("Volum necessari", min_value=1.0, step=1.0)
-
 # Mode Eina
-if st.session_state.active_mode == "eina":
+if st.session_state.active_mode == "Eina":
+    st.title("Eina de Decisió Financera Forex - Mode Eina")
     if from_currency == to_currency:
         st.warning("La moneda base i destí no poden ser iguals.")
     else:
-        st.subheader("Evolució històrica del tipus de canvi")
         data = fetch_historical_data(from_currency, to_currency)
         if data is not None:
             data = data[-730:]
             st.line_chart(data)
         else:
             st.error("No s'han pogut obtenir dades històriques.")
-
-        st.subheader("Defineix el preu escandall")
-        suggested_price = data["Close"].iloc[-1] if data is not None else None
-        preu_escandall = st.number_input("Preu escandall (€/$)", value=suggested_price or 1.10, step=0.01)
-
-        num_rules = configure_rules()
-        if num_rules > 0:
-            generate_rule_cards()
+        configure_rules()
+        generate_rule_cards()
+        
+    if st.button("Simula la transacció"):
+        model, look_back = fit_random_forest(data)
+        prediction = predict_random_forest(model, steps=30, data=data, look_back=look_back)
+        st.line_chart(prediction, use_container_width=True)
+        purchases, remaining_balance = simulate_purchases(data[-30:], st.session_state.rules)
+        st.write(f"Balanç restant: {remaining_balance:.2f}")
+        st.write("Compres realitzades:")
+        st.dataframe(purchases)
 
 # Mode Validador
-elif st.session_state.active_mode == "validador":
+elif st.session_state.active_mode == "Validador":
     st.title("Validador de Regles de Decisió")
     if from_currency != to_currency:
         data = fetch_historical_data(from_currency, to_currency)
         if data is not None:
             data = data[-730:]
-
-            num_rules = configure_rules()
-            if num_rules > 0:
-                generate_rule_cards()
-
-                st.subheader("Comparació de Resultats")
-                naive_returns = data["Close"].pct_change().cumsum()
-                tool_returns = data["Close"].pct_change().cumsum()  # Simulació placeholder
-                st.line_chart({"Naive Decisions": naive_returns, "Eina Decisions": tool_returns})
-            else:
-                st.info("Defineix almenys una regla per simular l'evolució.")
+            st.line_chart(data["Close"], height=200, use_container_width=True)
+            configure_rules()
+            generate_rule_cards()
         else:
             st.error("No s'han pogut obtenir dades històriques.")
     else:
         st.warning("La moneda base i destí no poden ser iguals.")
-else:
-    st.write("Selecciona una opció")
