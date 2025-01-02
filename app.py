@@ -22,7 +22,8 @@ def generate_fake_data(start_date, end_date, start_rate, volatility=0.01):
     return pd.DataFrame({'Close': rates}, index=date_range)
 
 # Funció per obtenir dades històriques
-@st.cache_data(show_spinner=True)
+@st.cache
+
 def fetch_historical_data(from_currency, to_currency):
     params = {
         'function': 'FX_DAILY',
@@ -194,7 +195,7 @@ def configure_rules():
     cols = st.columns(6)
     num_rules = len(st.session_state.rules)
     for i, col in enumerate(cols):
-        if col.button(str(i), use_container_width=True):
+        if col.button(str(i)):
             if i < num_rules:
                 st.session_state.rules = st.session_state.rules[:i]
             else:
