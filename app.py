@@ -133,25 +133,35 @@ def simulate_purchases(data, rules, initial_balance):
 
     for index, row in data.iterrows():
         for rule in rules:
-            if rule["type"] == "Simple" and row["Close"] <= rule["target_rate"]:
-                amount_to_purchase = balance * rule["coverage_percentage"] / 100
-                balance -= amount_to_purchase
-                purchases.append({"Date": index, "Price": row["Close"], "Amount": amount_to_purchase, "Rule": rule})
-            elif rule["type"] == "Condicionada" and row["Close"] <= rule["target_rate"]:
-                if rule["trend_condition"] == "Tendència alcista" and row["Close"] > data["Close"].mean():
+            if rule["type"] == "Simple":
+                # Regla simple: compra immediata si es compleix la condició
+                if row["Close"] <= rule["target_rate"]:
                     amount_to_purchase = balance * rule["coverage_percentage"] / 100
                     balance -= amount_to_purchase
-                    purchases.append({"Date": index, "Price": row["Close"], "Amount": amount_to_purchase, "Rule": rule})
-                elif rule["trend_condition"] == "Tendència baixista" and row["Close"] < data["Close"].mean():
-                    amount_to_purchase = balance * rule["coverage_percentage"] / 100
-                    balance -= amount_to_purchase
-                    purchases.append({"Date": index, "Price": row["Close"], "Amount": amount_to_purchase, "Rule": rule})
+                    purchases.append({"Date": index, "Price": row["Close"], "Amount": amount_to_purchase, "Rule": "Simple"})
+            elif rule["type"] == "Condicionada":
+                # Regla condicionada: compra només si es compleix la condició de tendència
+                if row["Close"] <= rule["target_rate"]:
+                    if rule["trend_condition"] == "Tendència alcista" and row["Close"] > data["Close"].rolling(5).mean().loc[index]:
+                        amount_to_purchase = balance * rule["coverage_percentage"] / 100
+                        balance -= amount_to_purchase
+                        purchases.append({"Date": index, "Price": row["Close"], "Amount": amount_to_purchase, "Rule": "Condicionada (Alcista)"})
+                    elif rule["trend_condition"] == "Tendència baixista" and row["Close"] < data["Close"].rolling(5).mean().loc[index]:
+                        amount_to_purchase = balance * rule["coverage_percentage"] / 100
+                        balance -= amount_to_purchase
+                        purchases.append({"Date": index, "Price": row["Close"], "Amount": amount_to_purchase, "Rule": "Condicionada (Baixista)"})
+                    elif rule["trend_condition"] == "Cap":
+                        amount_to_purchase = balance * rule["coverage_percentage"] / 100
+                        balance -= amount_to_purchase
+                        purchases.append({"Date": index, "Price": row["Close"], "Amount": amount_to_purchase, "Rule": "Condicionada (Cap)"})
 
     total_spent = sum(purchase['Amount'] / purchase['Price'] for purchase in purchases)
     final_value = total_spent * data.iloc[-1]['Close']
     profit_loss = final_value - initial_balance
 
     return pd.DataFrame(purchases), balance, profit_loss
+
+
 
 # Funció per representar gràficament la predicció i les regles aplicades
 def plot_simulation(data, predictions, purchases):
@@ -162,14 +172,18 @@ def plot_simulation(data, predictions, purchases):
     plt.plot(future_dates, predictions, label='Predicció tipus de canvi', color='red')
 
     for _, purchase in purchases.iterrows():
-        rule_applied = purchase['Rule']['type']
-        plt.axvline(purchase['Date'], color='green' if rule_applied == 'Simple' else 'orange', linestyle='--', label=f"Regla aplicada: {rule_applied}")
+        if "Condicionada" in purchase['Rule']:
+            color = 'orange'
+        else:
+            color = 'green'
+        plt.axvline(purchase['Date'], color=color, linestyle='--', label=f"Compra ({purchase['Rule']})")
 
     plt.xlabel('Data')
     plt.ylabel('Tipus de canvi')
-    plt.title("Simulació de l'evolució del Forex amb predicció i regles aplicades")
+    plt.title("Simulació de l'evolució del Forex amb regles aplicades")
     plt.legend()
     st.pyplot(plt)
+
 
 # Funció per predir el tipus de canvi futur utilitzant Random Forest amb lags
 def predict_forex(data, periods=30, lag=5):
@@ -230,13 +244,44 @@ if st.session_state.active_mode == "Eina":
                 plot_simulation(historical_data, predictions, purchases)
 
 # Mode Validador
+# Mode Validador
 elif st.session_state.active_mode == "Validador":
     st.title("Validador de Regles de Decisió")
+    
     if from_currency != to_currency:
         data = fetch_historical_data(from_currency, to_currency)
         if data is not None:
-            historical_data = data[-365:]
-            st.line_chart(historical_data, use_container_width=True)
-            configure_rules()
+            # Selecció del període històric
+            st.subheader("Selecciona el període històric")
+            start_date = st.date_input("Data d'inici", datetime.now() - timedelta(days=365 * 2))
+            end_date = st.date_input("Data de final", datetime.now())
+            
+            if start_date >= end_date:
+                st.error("La data d'inici ha de ser anterior a la data de final.")
+            else:
+                historical_data = data.loc[start_date:end_date]
+                
+                if historical_data.empty:
+                    st.warning("No hi ha dades per al període seleccionat.")
+                else:
+                    st.line_chart(historical_data, use_container_width=True)
+                    configure_rules()
+
+                    if st.button("Validar Operacions"):
+                        purchases, remaining_balance, profit_loss = simulate_purchases(historical_data, st.session_state.rules, st.session_state.initial_balance)
+
+                        st.write(f"Balanç restant: {remaining_balance:.2f}")
+                        st.write(f"Benefici/Pèrdua: {profit_loss:.2f}")
+
+                        if profit_loss > 0:
+                            st.success("L'operació hauria estat positiva.")
+                        else:
+                            st.error("L'operació hauria estat negativa.")
+
+                        st.write("Compres realitzades:")
+                        st.dataframe(purchases)
+
+                        # Representació gràfica
+                        plot_simulation(historical_data, [], purchases)
     else:
         st.warning("La moneda base i destí no poden ser iguals.")
