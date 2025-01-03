@@ -41,7 +41,7 @@ def fetch_historical_data(from_currency, to_currency):
             df.sort_index(inplace=True)
             df.rename(columns={"4. close": "Close"}, inplace=True)
             return df[["Close"]]
-    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+    start_date = (datetime.now() - timedelta(days=365 * 5)).strftime('%Y-%m-%d')
     end_date = datetime.now().strftime('%Y-%m-%d')
     return generate_fake_data(start_date, end_date, start_rate=1.10)
 
@@ -213,7 +213,7 @@ if st.session_state.active_mode == "Eina":
             configure_rules()
 
             if st.button("Simula la transacció"):
-                predictions = predict_forex(historical_data, periods=st.session_state.target_date, lag=5)
+                predictions = predict_forex(historical_data, periods=10, lag=5)
                 purchases, remaining_balance, profit_loss = simulate_purchases(historical_data, st.session_state.rules, st.session_state.initial_balance)
 
                 st.write(f"Balanç restant: {remaining_balance:.2f}")
